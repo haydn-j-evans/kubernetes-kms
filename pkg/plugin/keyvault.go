@@ -9,21 +9,23 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"path"
+	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 
-	"github.com/Azure/kubernetes-kms/pkg/auth"
-	"github.com/Azure/kubernetes-kms/pkg/config"
-	"github.com/Azure/kubernetes-kms/pkg/consts"
-	"github.com/Azure/kubernetes-kms/pkg/utils"
-	"github.com/Azure/kubernetes-kms/pkg/version"
-
-	kv "github.com/Azure/azure-sdk-for-go/services/keyvault/2016-10-01/keyvault"
-	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/utils"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/version"
+
+	vaultapi "github.com/hashicorp/vault/api"
+
+	"k8s.io/klog/v2"
 	"k8s.io/kms/pkg/service"
 	"monis.app/mlog"
 )
@@ -32,28 +34,26 @@ import (
 // This is helpful in case we want to change anything about the data we send in the future.
 var encryptionResponseVersion = "1"
 
-const (
-	dateAnnotationKey             = "date.azure.akv.io"
-	requestIDAnnotationKey        = "x-ms-request-id.azure.akv.io"
-	keyvaultRegionAnnotationKey   = "x-ms-keyvault-region.azure.akv.io"
-	versionAnnotationKey          = "version.azure.akv.io"
-	algorithmAnnotationKey        = "algorithm.azure.akv.io"
-	dateAnnotationValue           = "Date"
-	requestIDAnnotationValue      = "X-Ms-Request-Id"
-	keyvaultRegionAnnotationValue = "X-Ms-Keyvault-Region"
-)
+// Handle all communication with Vault server.
+type vaultWrapper struct {
+	client      *vaultapi.Client
+	encryptPath string
+	decryptPath string
+	authPath    string
+	rwmutex     sync.RWMutex
+	config      *Config
+	keyIDHash   string
+}
 
 // Client interface for interacting with Keyvault.
 type Client interface {
 	Encrypt(
 		ctx context.Context,
 		plain []byte,
-		encryptionAlgorithm kv.JSONWebKeyEncryptionAlgorithm,
 	) (*service.EncryptResponse, error)
 	Decrypt(
 		ctx context.Context,
 		cipher []byte,
-		encryptionAlgorithm kv.JSONWebKeyEncryptionAlgorithm,
 		apiVersion string,
 		annotations map[string][]byte,
 		decryptRequestKeyID string,
@@ -62,88 +62,324 @@ type Client interface {
 	GetVaultURL() string
 }
 
-// KeyVaultClient is a client for interacting with Keyvault.
-type KeyVaultClient struct {
-	baseClient       kv.BaseClient
-	config           *config.AzureConfig
-	vaultName        string
-	keyName          string
-	keyVersion       string
-	vaultURL         string
-	keyIDHash        string
-	azureEnvironment *azure.Environment
+// New creates an instance of the KMS client.
+func New(vaultConfig *Config) (Client, error) {
+
+	client, err := newClientWrapper(vaultConfig)
+	if err != nil {
+		mlog.Error("Unable to create vault client", err)
+	}
+
+	return client, nil
 }
 
-// NewKeyVaultClient returns a new key vault client to use for kms operations.
-func NewKeyVaultClient(
-	config *config.AzureConfig,
-	vaultName, keyName, keyVersion string,
-	proxyMode bool,
-	proxyAddress string,
-	proxyPort int,
-	managedHSM bool,
-) (Client, error) {
-	// Sanitize vaultName, keyName, keyVersion. (https://github.com/Azure/kubernetes-kms/issues/85)
-	vaultName = utils.SanitizeString(vaultName)
-	keyName = utils.SanitizeString(keyName)
-	keyVersion = utils.SanitizeString(keyVersion)
+// newClientWrapper initialize a client wrapper for vault kms provider.
+func newClientWrapper(vaultConfig *Config) (*vaultWrapper, error) {
+	mlog.Debug("Initialize client wrapper...")
 
-	// this should be the case for bring your own key, clusters bootstrapped with
-	// aks-engine or aks and standalone kms plugin deployments
-	if len(vaultName) == 0 || len(keyName) == 0 || len(keyVersion) == 0 {
-		return nil, fmt.Errorf("key vault name, key name and key version are required")
-	}
-	kvClient := kv.New()
-	err := kvClient.AddToUserAgent(version.GetUserAgent())
+	client, err := newVaultAPIClient(vaultConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to add user agent to keyvault client, error: %+v", err)
+		return nil, fmt.Errorf("unable to create vault client: %w", err)
 	}
-	env, err := auth.ParseAzureEnvironment(config.Cloud)
+
+	wrapper := &vaultWrapper{
+		client:      client,
+		encryptPath: path.Join("v1", vaultConfig.KeyVaultTransitPath, "encrypt"),
+		decryptPath: path.Join("v1", vaultConfig.KeyVaultTransitPath, "decrypt"),
+		authPath:    path.Join(vaultConfig.KeyVaultAuthPath),
+		config:      vaultConfig,
+		keyIDHash:   getKeyIDHash(vaultConfig.KeyVaultAddress, vaultConfig.KeyName, vaultConfig.KeyVersion),
+	}
+
+	// Set token for the vaultapi.client.
+	if vaultConfig.KeyVaultToken != "" {
+		mlog.Debug("Setting token for the vault client...", utils.SecretToLog(vaultConfig.KeyVaultToken))
+		client.SetToken(vaultConfig.KeyVaultToken)
+	} else {
+		mlog.Debug("Getting initial token...", "transit", vaultConfig.KeyVaultTransitPath, "auth", vaultConfig.KeyVaultAuthPath)
+
+		if err := wrapper.getInitialToken(vaultConfig); err != nil {
+			mlog.Error("Unable to get initial token", err, "transit", vaultConfig.KeyVaultTransitPath, "auth", vaultConfig.KeyVaultAuthPath)
+			return nil, fmt.Errorf("unable to get initial token: %w", err)
+		}
+	}
+
+	return wrapper, nil
+}
+
+func newVaultAPIClient(vaultConfig *Config) (*vaultapi.Client, error) {
+	mlog.Info("Configuring TLS...")
+
+	defaultConfig := vaultapi.DefaultConfig()
+	defaultConfig.Address = vaultConfig.KeyVaultAddress
+
+	tlsConfig := &vaultapi.TLSConfig{
+		CACert:        vaultConfig.KeyVaultCAFilePath,
+		ClientCert:    vaultConfig.KeyVaultClientCert,
+		ClientKey:     vaultConfig.KeyVaultClientKey,
+		TLSServerName: vaultConfig.KeyVaultTLSServerName,
+	}
+	if err := defaultConfig.ConfigureTLS(tlsConfig); err != nil {
+		return nil, fmt.Errorf("unable to configure TLS for %s: %w", vaultConfig.KeyVaultTLSServerName, err)
+	}
+
+	mlog.Info("Initializing API client...")
+
+	return vaultapi.NewClient(defaultConfig)
+}
+
+func (c *vaultWrapper) getInitialToken(vaultConfig *Config) error {
+	switch {
+	case vaultConfig.KeyVaultClientCert != "" && vaultConfig.KeyVaultClientKey != "":
+		mlog.Info("Get initial token by:", "cert", vaultConfig.KeyVaultClientCert, "key", vaultConfig.KeyVaultClientKey)
+
+		token, err := c.tlsToken()
+		if err != nil {
+			return fmt.Errorf("rotating token through TLS auth backend: %w", err)
+		}
+
+		c.client.SetToken(token)
+	case vaultConfig.KeyVaultAppRoleRoleID != "":
+		mlog.Info("Get initial token by:", "role", vaultConfig.KeyVaultAppRoleRoleID)
+
+		token, err := c.appRoleToken(vaultConfig)
+		if err != nil {
+			return fmt.Errorf("rotating token through app role backend: %w", err)
+		}
+
+		c.client.SetToken(token)
+	default:
+		// configuration has already been validated, flow should not reach here
+		return errors.New("the Vault authentication configuration is invalid")
+	}
+
+	return nil
+}
+
+func (c *vaultWrapper) tlsToken() (string, error) {
+	loginPath := path.Join("/", c.authPath, "cert", "login")
+
+	mlog.Info("Get TLS token...", "path", loginPath)
+
+	resp, err := c.client.Logical().Write(loginPath, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse cloud environment: %s, error: %+v", config.Cloud, err)
-	}
-	if proxyMode {
-		env.ActiveDirectoryEndpoint = fmt.Sprintf("http://%s:%d/", proxyAddress, proxyPort)
+		return "", fmt.Errorf("unable to write TLS via API on %s: %w", loginPath, err)
+	} else if resp.Auth == nil {
+		return "", errors.New("authentication information not found")
 	}
 
-	vaultResourceURL := getVaultResourceIdentifier(managedHSM, env)
-	if vaultResourceURL == azure.NotAvailable {
-		return nil, fmt.Errorf("keyvault resource identifier not available for cloud: %s", env.Name)
+	return resp.Auth.ClientToken, nil
+}
+
+func (c *vaultWrapper) appRoleToken(vaultConfig *Config) (string, error) {
+	data := map[string]interface{}{
+		"role_id":   vaultConfig.KeyVaultAppRoleRoleID,
+		"secret_id": vaultConfig.KeyVaultAppRoleSecretID,
 	}
-	token, err := auth.GetKeyvaultToken(config, env, vaultResourceURL, proxyMode)
+	loginPath := path.Join("/", c.authPath, "approle", "login")
+
+	mlog.Info("Get app role token...", "path", loginPath, "role_id", vaultConfig.KeyVaultAppRoleRoleID, "secret_id", utils.SecretToLog(vaultConfig.KeyVaultAppRoleSecretID))
+
+	resp, err := c.client.Logical().Write(loginPath, data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get key vault token, error: %+v", err)
+		return "", fmt.Errorf("unable to write app role token via API on %s: %w", loginPath, err)
+	} else if resp.Auth == nil {
+		return "", errors.New("authentication information not found")
 	}
-	kvClient.Authorizer = token
 
-	vaultURL, err := getVaultURL(vaultName, managedHSM, env)
+	return resp.Auth.ClientToken, nil
+}
+
+// Encrypt encrypts input.
+func (c *vaultWrapper) Encrypt(ctx context.Context, data []byte) ([]byte, error) {
+	mlog.Info("Encrypting...")
+
+	mlog.Info("Encrypting data...", "key", c.config.KeyName, "data", utils.SecretToLog(string(data)))
+
+	response, err := c.withRefreshToken(true, c.config.KeyName, data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get vault url, error: %+v", err)
+		mlog.Error("Unable to encrypt data", err)
+		return nil, fmt.Errorf("unable to encrypt data: %w", err)
 	}
 
-	keyIDHash, err := getKeyIDHash(*vaultURL, keyName, keyVersion)
+	mlog.Info("Encrypted data...", "key", c.config.KeyName, "data", utils.SecretToLog(response))
+
+	response := &service.EncryptResponse{
+		Ciphertext:  []byte(response),
+		KeyID:       response.KeyID,
+		Annotations: response,
+	return []byte(response), nil
+}
+
+// Decrypt decrypts input.
+func (c *vaultWrapper) Decrypt(ctx context.Context, data []byte) ([]byte, error) {
+	mlog.Debug("Decrypting...")
+
+	mlog.Debug("Decrypting data...", "key", c.config.KeyName, "data", utils.SecretToLog(string(data)))
+
+	response, err := c.withRefreshToken(false, c.config.KeyName, data)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get key id hash, error: %w", err)
+		klog.InfoS("Unable to decrypt data", "error", err.Error())
+		return nil, fmt.Errorf("unable to decrypt data: %w", err)
 	}
 
-	if proxyMode {
-		kvClient.RequestInspector = autorest.WithHeader(consts.RequestHeaderTargetType, consts.TargetTypeKeyVault)
-		vaultURL = getProxiedVaultURL(vaultURL, proxyAddress, proxyPort)
+	mlog.Debug("Decrypted data...", "key", c.config.KeyName, "data", utils.SecretToLog(response))
+
+	return []byte(response), nil
+}
+
+func (c *vaultWrapper) request(requestPath string, data interface{}) (*vaultapi.Secret, error) {
+	mlog.Debug("Sending request...", "path", requestPath)
+
+	req := c.client.NewRequest("POST", "/"+requestPath)
+	if err := req.SetJSONBody(data); err != nil {
+		return nil, fmt.Errorf("unable to set request JSON on %s: %w", requestPath, err)
 	}
 
-	mlog.Always("using kms key for encrypt/decrypt", "vaultURL", *vaultURL, "keyName", keyName, "keyVersion", keyVersion)
+	//nolint:staticcheck // we know RawRequest is deprecated
+	resp, err := c.client.RawRequest(req)
+	if err != nil {
+		code := -1
+		if resp != nil {
+			code = resp.StatusCode
+		}
 
-	client := &KeyVaultClient{
-		baseClient:       kvClient,
-		config:           config,
-		vaultName:        vaultName,
-		keyName:          keyName,
-		keyVersion:       keyVersion,
-		vaultURL:         *vaultURL,
-		azureEnvironment: env,
-		keyIDHash:        keyIDHash,
+		klog.InfoS("Failed to send request", "code", code, "error", err.Error())
+
+		if code == http.StatusForbidden {
+			return nil, newForbiddenError(err)
+		}
+
+		return nil, fmt.Errorf("error making POST request on %s: %w", requestPath, err)
+	} else if resp == nil {
+		return nil, fmt.Errorf("no response received for POST request on %s: %w", requestPath, err)
 	}
-	return client, nil
+
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			klog.ErrorS(err, "Failed to close body")
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected response code: %v received for POST request to %v", resp.StatusCode, requestPath)
+	}
+
+	mlog.Debug("Parsing secret...")
+
+	return vaultapi.ParseSecret(resp.Body)
+}
+
+func (c *vaultWrapper) Version() error {
+	return version.PrintVersion()
+}
+
+func (c *vaultWrapper) withRefreshToken(isEncrypt bool, key string, data []byte) (string, error) {
+	// Execute operation first time.
+	var (
+		result string
+		err    error
+	)
+
+	func() {
+		c.rwmutex.RLock()
+		defer c.rwmutex.RUnlock()
+
+		if isEncrypt {
+			result, err = c.encryptLocked(key, data)
+		} else {
+			result, err = c.decryptLocked(key, data)
+		}
+	}()
+
+	if err == nil || c.config.KeyVaultToken != "" {
+		return result, nil
+	}
+
+	if _, ok := err.(*forbiddenError); !ok {
+		return result, fmt.Errorf("error during connection for %s: %w", key, err)
+	}
+
+	c.rwmutex.Lock()
+	defer c.rwmutex.Unlock()
+
+	mlog.Debug("Refreshing token...")
+
+	if err = c.refreshTokenLocked(c.config); err != nil {
+		klog.Error(err, "Failed to refresh token")
+		return result, fmt.Errorf("error refresh token request: %w", err)
+	}
+
+	mlog.Debug("Token refreshed...")
+
+	if isEncrypt {
+		result, err = c.encryptLocked(key, data)
+	} else {
+		result, err = c.decryptLocked(key, data)
+	}
+
+	if err != nil {
+		klog.InfoS("Error during en/de-cryption", "isEncrypt", isEncrypt, "key", key)
+		err = fmt.Errorf("error during en/de-cryption for %s: %w", key, err)
+	}
+
+	return result, err
+}
+
+func (c *vaultWrapper) refreshTokenLocked(vaultConfig *Config) error {
+	return c.getInitialToken(vaultConfig)
+}
+
+func (c *vaultWrapper) encryptLocked(key string, data []byte) (string, error) {
+	mlog.Debug("Encrypting locked...", "key", key)
+
+	dataReq := map[string]string{"plaintext": base64.StdEncoding.EncodeToString(data)}
+
+	resp, err := c.request(path.Join(c.encryptPath, key), dataReq)
+	if err != nil {
+		klog.InfoS("Failed to encrypt locked", "key", key, "error", err.Error())
+		return "", fmt.Errorf("error during encrypt request for %s: %w", key, err)
+	}
+
+	result, ok := resp.Data["ciphertext"].(string)
+	if !ok {
+		klog.InfoS("Failed to find ciphertext", "key", key)
+		return result, fmt.Errorf("failed type assertion of vault encrypt response type for %s: %v to string", key, reflect.TypeOf(resp.Data["ciphertext"]))
+	}
+
+	return base64.StdEncoding.EncodeToString([]byte(result)), nil
+}
+
+func (c *vaultWrapper) decryptLocked(_ string, data []byte) (string, error) {
+	mlog.Debug("Decrypting locked...")
+
+	chiphertext, err := base64.StdEncoding.DecodeString(string(data))
+	if err != nil {
+		klog.InfoS("Failed decode encrypted data", "error", err.Error())
+		return "", fmt.Errorf("failed decode encrypted data: %w", err)
+	}
+
+	dataReq := map[string]string{"ciphertext": string(chiphertext)}
+
+	resp, err := c.request(path.Join(c.decryptPath, c.config.KeyName), dataReq)
+	if err != nil {
+		klog.InfoS("Failed to decrypt locked", "error", err.Error())
+		return "", fmt.Errorf("error during decrypt request: %w", err)
+	}
+
+	result, ok := resp.Data["plaintext"].(string)
+	if !ok {
+		klog.InfoS("Failed to find plaintext representation")
+		return "", fmt.Errorf("failed type assertion of vault decrypt response type: %v to string", reflect.TypeOf(resp.Data["plaintext"]))
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(result)
+	if err != nil {
+		klog.InfoS("Failed decode encrypted data", "error", err.Error())
+		return "", fmt.Errorf("failed decode encrypted data: %w", err)
+	}
+
+	return string(decoded), nil
 }
 
 // Encrypt encrypts the given plain text using the keyvault key.

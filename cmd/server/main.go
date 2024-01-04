@@ -17,11 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Azure/kubernetes-kms/pkg/config"
-	"github.com/Azure/kubernetes-kms/pkg/metrics"
-	"github.com/Azure/kubernetes-kms/pkg/plugin"
-	"github.com/Azure/kubernetes-kms/pkg/utils"
-	"github.com/Azure/kubernetes-kms/pkg/version"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/metrics"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/plugin"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/utils"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/version"
 
 	"google.golang.org/grpc"
 	"k8s.io/klog/v2"
@@ -31,17 +30,32 @@ import (
 )
 
 var (
-	listenAddr    = flag.String("listen-addr", "unix:///opt/azurekms.socket", "gRPC listen address")
-	keyvaultName  = flag.String("keyvault-name", "", "Azure Key Vault name")
-	keyName       = flag.String("key-name", "", "Azure Key Vault KMS key name")
-	keyVersion    = flag.String("key-version", "", "Azure Key Vault KMS key version")
-	managedHSM    = flag.Bool("managed-hsm", false, "Azure Key Vault Managed HSM. Refer to https://docs.microsoft.com/en-us/azure/key-vault/managed-hsm/overview for more details.")
+	listenAddr   = flag.String("listen-addr", "unix:///opt/azurekms.socket", "gRPC listen address")
+	keyvaultName = flag.String("keyvault-name", "", "Hashicorp Key Vault name")
+
 	logFormatJSON = flag.Bool("log-format-json", false, "set log formatter to json")
 	logLevel      = flag.Int("v", 0, "In order of increasing verbosity: 0=warning/error, 2=info, 4=debug, 6=trace, 10=all")
-	// TODO remove this flag in future release.
-	_              = flag.String("configFilePath", "/etc/kubernetes/azure.json", "[DEPRECATED] Path for Azure Cloud Provider config file")
-	configFilePath = flag.String("config-file-path", "/etc/kubernetes/azure.json", "Path for Azure Cloud Provider config file")
-	versionInfo    = flag.Bool("version", false, "Prints the version information")
+
+	keyName         = flag.String("key-name", "", "Key Vault KMS key name")
+	keyVersion      = flag.String("key-version", "", "Key Vault KMS key version")
+	keyVaultAddress = flag.String("address", "http://localhost:8200", "Key Vault KMS key address")
+
+	keyVaultToken           = flag.String("token", "", "Key Vault KMS key token")
+	keyVaultAppRoleRoleID   = flag.String("approle-role-id", "", "Key Vault KMS key app role id")
+	keyVaultAppRoleSecretID = flag.String("approle-secret-id", "", "Key Vault KMS key app secret id")
+
+	// CACert is the path to a PEM-encoded CA cert file to use to verify the
+	// Vault server SSL certificate.
+	keyVaultCAFilePath = flag.String("ca-file", "", "Key Vault KMS key CA file")
+	keyVaultClientCert = flag.String("client-cert", "", "Key Vault KMS key client certificate")
+	keyVaultClientKey  = flag.String("client-key", "", "Key Vault KMS key client key")
+
+	// TLSServerName, if set, is used to set the SNI host when connecting via TLS.
+	keyVaultTLSServerName = flag.String("tls-server-name", "", "Key Vault KMS key tls server name")
+	keyVaultTransitPath   = flag.String("transit-path", "transit", "Key Vault KMS key transit path")
+	keyVaultAuthPath      = flag.String("auth-path", "auth", "Key Vault KMS key auth path")
+
+	versionInfo = flag.Bool("version", false, "Prints the version information")
 
 	healthzPort    = flag.Int("healthz-port", 8787, "port for health check")
 	healthzPath    = flag.String("healthz-path", "/healthz", "path for health check")
@@ -90,31 +104,25 @@ func setupKMSPlugin() error {
 	mlog.Always("Starting KeyManagementServiceServer service", "version", version.BuildVersion, "buildDate", version.BuildDate)
 
 	pluginConfig := &plugin.Config{
-		KeyVaultName:   *keyvaultName,
-		KeyName:        *keyName,
-		KeyVersion:     *keyVersion,
-		ManagedHSM:     *managedHSM,
-		ProxyMode:      *proxyMode,
-		ProxyAddress:   *proxyAddress,
-		ProxyPort:      *proxyPort,
-		ConfigFilePath: *configFilePath,
+		KeyVaultName:            *keyvaultName,
+		KeyName:                 *keyName,
+		KeyVersion:              *keyVersion,
+		KeyVaultAddress:         *keyVaultAddress,
+		KeyVaultToken:           *keyVaultToken,
+		KeyVaultAppRoleRoleID:   *keyVaultAppRoleRoleID,
+		KeyVaultAppRoleSecretID: *keyVaultAppRoleSecretID,
+		KeyVaultCAFilePath:      *keyVaultCAFilePath,
+		KeyVaultClientCert:      *keyVaultClientCert,
+		KeyVaultClientKey:       *keyVaultClientKey,
+		KeyVaultTLSServerName:   *keyVaultTLSServerName,
+		KeyVaultTransitPath:     *keyVaultTransitPath,
+		KeyVaultAuthPath:        *keyVaultAuthPath,
+		ProxyMode:               *proxyMode,
+		ProxyAddress:            *proxyAddress,
+		ProxyPort:               *proxyPort,
 	}
 
-	azureConfig, err := config.GetAzureConfig(pluginConfig.ConfigFilePath)
-	if err != nil {
-		return fmt.Errorf("failed to get azure config: %w", err)
-	}
-
-	kvClient, err := plugin.NewKeyVaultClient(
-		azureConfig,
-		pluginConfig.KeyVaultName,
-		pluginConfig.KeyName,
-		pluginConfig.KeyVersion,
-		pluginConfig.ProxyMode,
-		pluginConfig.ProxyAddress,
-		pluginConfig.ProxyPort,
-		pluginConfig.ManagedHSM,
-	)
+	kvClient, err := plugin.NewKeyVaultClient(pluginConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create key vault client: %w", err)
 	}

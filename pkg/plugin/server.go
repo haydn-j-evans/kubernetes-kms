@@ -10,31 +10,37 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Azure/kubernetes-kms/pkg/metrics"
-	"github.com/Azure/kubernetes-kms/pkg/version"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/metrics"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/version"
 
-	"github.com/Azure/azure-sdk-for-go/services/keyvault/2016-10-01/keyvault"
 	kmsv1 "k8s.io/kms/apis/v1beta1"
 	"monis.app/mlog"
 )
 
 // KeyManagementServiceServer is a gRPC server.
 type KeyManagementServiceServer struct {
-	kvClient            Client
-	reporter            metrics.StatsReporter
-	encryptionAlgorithm keyvault.JSONWebKeyEncryptionAlgorithm
+	kvClient Client
+	reporter metrics.StatsReporter
 }
 
 // Config is the configuration for the KMS plugin.
 type Config struct {
-	ConfigFilePath string
-	KeyVaultName   string
-	KeyName        string
-	KeyVersion     string
-	ManagedHSM     bool
-	ProxyMode      bool
-	ProxyAddress   string
-	ProxyPort      int
+	KeyVaultName            string
+	KeyName                 string
+	KeyVersion              string
+	KeyVaultAddress         string
+	KeyVaultToken           string
+	KeyVaultAppRoleRoleID   string
+	KeyVaultAppRoleSecretID string
+	KeyVaultCAFilePath      string
+	KeyVaultClientCert      string
+	KeyVaultClientKey       string
+	KeyVaultTLSServerName   string
+	KeyVaultTransitPath     string
+	KeyVaultAuthPath        string
+	ProxyMode               bool
+	ProxyAddress            string
+	ProxyPort               int
 }
 
 // NewKMSv1Server creates an instance of the KMS Service Server.
@@ -45,9 +51,8 @@ func NewKMSv1Server(kvClient Client) (*KeyManagementServiceServer, error) {
 	}
 
 	return &KeyManagementServiceServer{
-		kvClient:            kvClient,
-		reporter:            statsReporter,
-		encryptionAlgorithm: keyvault.RSA15,
+		kvClient: kvClient,
+		reporter: statsReporter,
 	}, nil
 }
 
@@ -76,7 +81,7 @@ func (s *KeyManagementServiceServer) Encrypt(ctx context.Context, request *kmsv1
 	}()
 
 	mlog.Info("encrypt request started")
-	encryptResponse, err := s.kvClient.Encrypt(ctx, request.Plain, s.encryptionAlgorithm)
+	encryptResponse, err := s.kvClient.Encrypt(ctx, request.Plain)
 	if err != nil {
 		mlog.Error("failed to encrypt", err)
 		return &kmsv1.EncryptResponse{}, err
@@ -106,7 +111,6 @@ func (s *KeyManagementServiceServer) Decrypt(ctx context.Context, request *kmsv1
 	plain, err := s.kvClient.Decrypt(
 		ctx,
 		request.Cipher,
-		s.encryptionAlgorithm,
 		request.Version,
 		nil,
 		"",

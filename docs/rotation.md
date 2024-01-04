@@ -19,11 +19,11 @@ For all Kubernetes control plane nodes, add the static pod manifest to `/etc/kub
 apiVersion: v1
 kind: Pod
 metadata:
-  name: azure-kms-provider-2
+  name: vault-kms-provider-2
   namespace: kube-system
   labels:
     tier: control-plane
-    component: azure-kms-provider
+    component: vault-kms-provider
 spec:
   priorityClassName: system-node-critical
   hostNetwork: true
@@ -32,7 +32,7 @@ spec:
       image: mcr.microsoft.com/oss/azure/kms/keyvault:v0.5.0
       imagePullPolicy: IfNotPresent
       args:
-      - --listen-addr=unix:///opt/azurekms2.socket            # unix:///opt/azurekms.socket is used by the primary kms plugin pod. So use a different listen address here for the new kms plugin pod.
+      - --listen-addr=unix:///opt/vaultkms2.socket            # unix:///opt/azurekms.socket is used by the primary kms plugin pod. So use a different listen address here for the new kms plugin pod.
       - --keyvault-name=${KV_NAME}                            # [REQUIRED] Name of the keyvault
       - --key-name=${KEY_NAME}                                # [REQUIRED] Name of the keyvault key used for encrypt/decrypt
       - --key-version=${KEY_VERSION}                          # [REQUIRED] Version of the key to use
@@ -96,7 +96,7 @@ I0219 17:35:33.608840       1 main.go:60] "Starting KeyManagementServiceServer s
 I0219 17:35:33.609090       1 azure_config.go:27] populating AzureConfig from /etc/kubernetes/azure.json
 I0219 17:35:33.609420       1 auth.go:66] "azure: using client_id+client_secret to retrieve access token" clientID="9a7a##### REDACTED #####bb26" clientSecret="23T.##### REDACTED #####vw-r"
 I0219 17:35:33.609568       1 keyvault.go:66] "using kms key for encrypt/decrypt" vaultName="k8skmskv" keyName="key1" keyVersion="5cdf48ea6bb9456ebf637e1130b7751a"
-I0219 17:35:33.609897       1 main.go:86] Listening for connections on address: /opt/azurekms2.socket
+I0219 17:35:33.609897       1 main.go:86] Listening for connections on address: /opt/vaultkms2.socket
 ...
 ```
 
@@ -111,11 +111,11 @@ resources:
     providers:
       - kms:
           name: azurekmsprovider
-          endpoint: unix:///opt/azurekms.socket           # This endpoint must match the value defined in --listen-addr for the KMS plugin using old key
+          endpoint: unix:///opt/vaultkms.socket           # This endpoint must match the value defined in --listen-addr for the KMS plugin using old key
           cachesize: 1000
       - kms:
           name: azurekmsprovider2
-          endpoint: unix:///opt/azurekms2.socket          # This endpoint must match the value defined in --listen-addr for the KMS plugin using new key
+          endpoint: unix:///opt/vaultkms2.socket          # This endpoint must match the value defined in --listen-addr for the KMS plugin using new key
           cachesize: 1000
 ```
 
@@ -137,12 +137,12 @@ resources:
       # kms provider with new key
       - kms:
           name: azurekmsprovider2
-          endpoint: unix:///opt/azurekms2.socket          # This endpoint must match the value defined in --listen-addr for the KMS plugin using new key
+          endpoint: unix:///opt/vaultkms2.socket          # This endpoint must match the value defined in --listen-addr for the KMS plugin using new key
           cachesize: 1000
       # kms provider with old key
       - kms:
           name: azurekmsprovider
-          endpoint: unix:///opt/azurekms.socket           # This endpoint must match the value defined in --listen-addr for the KMS plugin using old key
+          endpoint: unix:///opt/vaultkms.socket           # This endpoint must match the value defined in --listen-addr for the KMS plugin using old key
           cachesize: 1000
 ```
 

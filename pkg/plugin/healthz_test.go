@@ -17,8 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/kubernetes-kms/pkg/metrics"
-	mockkeyvault "github.com/Azure/kubernetes-kms/pkg/plugin/mock_keyvault"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/metrics"
 
 	"github.com/Azure/azure-sdk-for-go/services/keyvault/2016-10-01/keyvault"
 	"google.golang.org/grpc"
