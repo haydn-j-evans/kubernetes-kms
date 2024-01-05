@@ -6,7 +6,7 @@
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/Azure/kubernetes-kms)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Azure/kubernetes-kms/badge)](https://api.securityscorecards.dev/projects/github.com/Azure/kubernetes-kms)
 
-Enables encryption at rest of your Kubernetes data in etcd using Azure Key Vault.
+Enables encryption at rest of your Kubernetes data in etcd using Hashicorp Vault.
 
 From the Kubernetes documentation on [Encrypting Secret Data at Rest]:
 
