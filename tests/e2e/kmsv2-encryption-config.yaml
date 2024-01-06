@@ -6,5 +6,5 @@ resources:
     providers:
       - kms:
           apiVersion: v2
-          name: azurekmsprovider
-          endpoint: unix:///opt/azurekms.socket
+          name: vaultkmsprovider
+          endpoint: unix:///opt/vaultkms.socket

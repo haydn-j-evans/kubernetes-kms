@@ -19,6 +19,10 @@ setup() {
     wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl -n kube-system wait --for=condition=Ready --timeout=60s pod -l component=azure-kms-provider"
 }
 
+@test "keyvault kms is running" {
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl -n kube-system wait --for=condition=Ready --timeout=60s pod -l component=vault"
+}
+
 @test "creating secret resource" {
     run kubectl create secret generic secret1 -n default --from-literal=foo=bar
     let "expected_encyption_count++"

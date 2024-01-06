@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/keyvault/2016-10-01/keyvault"
-	"github.com/Azure/kubernetes-kms/pkg/metrics"
+	"github.com/Azure/azure-sdk-for-go/services/keyvault/v7.0/keyvault"
 	mockkeyvault "github.com/Azure/kubernetes-kms/pkg/plugin/mock_keyvault"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/metrics"
 
-	"github.com/Azure/kubernetes-kms/pkg/version"
+	"github.com/haydn-j-evans/kubernetes-kms/pkg/version"
 	kmsv2 "k8s.io/kms/apis/v2"
 )
 

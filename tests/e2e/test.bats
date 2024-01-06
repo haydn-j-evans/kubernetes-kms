@@ -15,8 +15,12 @@ else
     export ETCD_KEY=/etc/kubernetes/pki/etcd/server.key
 fi
 
-@test "azure keyvault kms plugin is running" {
-    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl -n kube-system wait --for=condition=Ready --timeout=60s pod -l component=azure-kms-provider"
+@test "keyvault kms plugin is running" {
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl -n kube-system wait --for=condition=Ready --timeout=60s pod -l component=vault-kms-provider"
+}
+
+@test "keyvault is running" {
+    wait_for_process ${WAIT_TIME} ${SLEEP_TIME} "kubectl -n kube-system wait --for=condition=Ready --timeout=60s pod -l component=vault"
 }
 
 @test "creating secret resource" {

@@ -1,4 +1,4 @@
-ORG_PATH=github.com/Azure
+ORG_PATH=github.com/haydn-j-evans
 PROJECT_NAME := kubernetes-kms
 REPO_PATH="$(ORG_PATH)/$(PROJECT_NAME)"
 
@@ -104,7 +104,7 @@ docker-push-manifest:
 
 .PHONY: integration-test
 integration-test:
-	go test -v -count=1 -failfast github.com/Azure/kubernetes-kms/tests/client
+	go test -v -count=1 -failfast github.com/haydn-j-evans/kubernetes-kms/tests/client
 
 .PHONY: unit-test
 unit-test:
@@ -143,7 +143,6 @@ setup-local-registry:
 
 e2e-generate-manifests:
 	@mkdir -p tests/e2e/generated_manifests
-	envsubst < tests/e2e/azure.json > tests/e2e/generated_manifests/azure.json
 	envsubst < tests/e2e/kms.yaml > tests/e2e/generated_manifests/kms.yaml
 
 e2e-delete-kind:

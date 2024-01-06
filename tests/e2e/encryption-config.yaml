@@ -5,7 +5,7 @@ resources:
       - secrets
     providers:
       - kms:
-          name: azurekmsprovider
-          endpoint: unix:///opt/azurekms.socket
+          name: vaultkmsprovider
+          endpoint: unix:///opt/vaultkms.socket
           cachesize: 1000
       - identity: {}

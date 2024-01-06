@@ -122,7 +122,7 @@ func setupKMSPlugin() error {
 		ProxyPort:               *proxyPort,
 	}
 
-	kvClient, err := plugin.NewKeyVaultClient(pluginConfig)
+	kvClient, err := plugin.New(pluginConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create key vault client: %w", err)
 	}
