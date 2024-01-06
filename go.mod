@@ -4,7 +4,6 @@ go 1.21
 
 require (
 	github.com/Azure/azure-sdk-for-go v68.0.0+incompatible
-	github.com/Azure/go-autorest/autorest v0.11.29
 	github.com/Azure/kubernetes-kms v0.5.0
 	github.com/hashicorp/vault/api v1.10.0
 	go.opentelemetry.io/otel v1.15.1
@@ -19,6 +18,7 @@ require (
 )
 
 require (
+	github.com/Azure/go-autorest/autorest v0.11.29 // indirect
 	github.com/Azure/go-autorest/autorest/adal v0.9.23 // indirect
 	github.com/cenkalti/backoff/v3 v3.0.0 // indirect
 	github.com/go-jose/go-jose/v3 v3.0.0 // indirect
